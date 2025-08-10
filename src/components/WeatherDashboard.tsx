@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Search, MapPin, Sun, Cloud, CloudRain, CloudSnow, Wind, Droplets, Eye, Thermometer } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,14 @@ interface ForecastDay {
   icon: string;
 }
 
+interface CitySuggestion {
+  name: string;
+  country: string;
+  state?: string;
+  lat: number;
+  lon: number;
+}
+
 const API_KEY = "f37f867ba0124dd49da3669fa19a0c14";
 
 const WeatherDashboard = () => {
@@ -36,17 +44,72 @@ const WeatherDashboard = () => {
   const [searchLocation, setSearchLocation] = useState("");
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState<CitySuggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
   useEffect(() => {
     getCurrentLocationWeather();
     loadRecentSearches();
+    
+    // Close suggestions when clicking outside
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
   }, []);
 
   const loadRecentSearches = () => {
     const saved = localStorage.getItem("recentWeatherSearches");
     if (saved) {
       setRecentSearches(JSON.parse(saved));
+    }
+  };
+
+  // Debounced search for city suggestions
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (searchLocation.trim() && searchLocation.length > 2) {
+        fetchCitySuggestions(searchLocation);
+      } else {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [searchLocation]);
+
+  const fetchCitySuggestions = async (query: string) => {
+    try {
+      setSuggestionLoading(true);
+      const response = await fetch(
+        `https://api.openweathermap.org/geo/1.0/direct?q=${query}&limit=5&appid=${API_KEY}`
+      );
+      const data = await response.json();
+      
+      const formattedSuggestions: CitySuggestion[] = data.map((item: any) => ({
+        name: item.name,
+        country: item.country,
+        state: item.state,
+        lat: item.lat,
+        lon: item.lon,
+      }));
+      
+      setSuggestions(formattedSuggestions);
+      setShowSuggestions(formattedSuggestions.length > 0);
+    } catch (error) {
+      console.error("Error fetching city suggestions:", error);
+    } finally {
+      setSuggestionLoading(false);
     }
   };
 
@@ -179,7 +242,16 @@ const WeatherDashboard = () => {
     if (searchLocation.trim()) {
       fetchWeatherByCity(searchLocation);
       setSearchLocation("");
+      setShowSuggestions(false);
     }
+  };
+
+  const handleSuggestionClick = (suggestion: CitySuggestion) => {
+    const locationName = `${suggestion.name}, ${suggestion.country}`;
+    fetchWeatherByCoords(suggestion.lat, suggestion.lon);
+    setSearchLocation("");
+    setShowSuggestions(false);
+    saveRecentSearch(locationName);
   };
 
   const getWeatherIcon = (condition: string) => {
@@ -216,15 +288,45 @@ const WeatherDashboard = () => {
         {/* Search Section */}
         <Card className="weather-card">
           <form onSubmit={handleSearch} className="flex gap-4">
-            <div className="flex-1 relative">
-              <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+            <div className="flex-1 relative" ref={searchRef}>
+              <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4 z-10" />
               <Input
                 type="text"
                 placeholder="Search for a city..."
                 value={searchLocation}
                 onChange={(e) => setSearchLocation(e.target.value)}
+                onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
                 className="pl-10 bg-background/50 border-border/50 focus:border-primary transition-colors"
               />
+              
+              {/* City Suggestions Dropdown */}
+              {showSuggestions && (suggestions.length > 0 || suggestionLoading) && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-lg shadow-lg z-20 max-h-60 overflow-y-auto">
+                  {suggestionLoading ? (
+                    <div className="p-3 text-center text-muted-foreground">
+                      <div className="animate-spin w-4 h-4 border-2 border-primary border-t-transparent rounded-full mx-auto mb-2"></div>
+                      Searching cities...
+                    </div>
+                  ) : (
+                    suggestions.map((suggestion, index) => (
+                      <button
+                        key={index}
+                        type="button"
+                        onClick={() => handleSuggestionClick(suggestion)}
+                        className="w-full text-left p-3 hover:bg-muted/50 transition-colors border-b border-border/20 last:border-b-0 flex items-center gap-2"
+                      >
+                        <MapPin className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                        <div>
+                          <div className="font-medium">{suggestion.name}</div>
+                          <div className="text-sm text-muted-foreground">
+                            {suggestion.state ? `${suggestion.state}, ` : ''}{suggestion.country}
+                          </div>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
             <Button type="submit" disabled={loading} className="px-8">
               <Search className="w-4 h-4 mr-2" />
